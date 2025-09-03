@@ -1,0 +1,10 @@
+#!/bin/bash
+echo "🏦 CloudBank Platform Status Overview"
+echo "===================================="
+echo "Project Directory: $(test -d ~/cloudbank-enterprise-platform && echo "✅ Found" || echo "❌ Missing")"
+echo "Docker Status: $(systemctl is-active docker 2>/dev/null || echo "inactive")"
+echo "Kubernetes Cluster: $(kind get clusters 2>/dev/null | grep cloudbank-dev >/dev/null && echo "✅ Active" || echo "❌ Not found")"
+echo "Services Running: $(docker-compose ps --services --filter status=running 2>/dev/null | wc -l) / $(docker-compose ps --services 2>/dev/null | wc -l)"
+echo "API Gateway: $(curl -s http://localhost:3000/health >/dev/null && echo "✅ Healthy" || echo "❌ Down")"
+echo ""
+echo "Run 'cbmonitor' for detailed monitoring"
