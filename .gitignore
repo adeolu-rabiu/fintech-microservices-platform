@@ -44,3 +44,9 @@ cloudbank-config.local.json
 temp/
 build/
 dist/
+
+# Exclude entire scripts directory
+scripts/
+
+# Exclude entire scripts directory
+scripts/
