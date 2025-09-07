@@ -1,0 +1,46 @@
+const express = require('express');
+const { createProxyMiddleware } = require('http-proxy-middleware');
+const cors = require('cors');
+const helmet = require('helmet');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+const AUTH_URL         = process.env.AUTH_URL || 'http://auth-service:3001';
+const ACCOUNT_URL      = process.env.ACCOUNT_URL || 'http://account-service:3002';
+const TRANSACTION_URL  = process.env.TRANSACTION_URL || 'http://transaction-service:3003';
+const AUDIT_URL        = process.env.AUDIT_URL || 'http://audit-service:3005';
+
+// 1) Simple request log (hits BEFORE proxy so we see incoming)
+app.use((req, _res, next) => {
+  console.log(new Date().toISOString(), req.method, req.originalUrl);
+  next();
+});
+
+// 2) MOUNT PROXIES FIRST (no pathRewrite, no restream needed)
+const makeProxy = (target) => createProxyMiddleware({
+  target,
+  changeOrigin: true,
+  logLevel: 'debug',
+  proxyTimeout: 15000,
+  timeout: 15000,
+  onError: (err, _req, res) => {
+    console.error('Proxy error:', err.message);
+    res.status(502).json({ error: 'Bad gateway', detail: err.message });
+  },
+});
+
+app.use('/api/auth',         makeProxy(AUTH_URL));
+app.use('/api/accounts',     makeProxy(ACCOUNT_URL));
+app.use('/api/transactions', makeProxy(TRANSACTION_URL));
+app.use('/api/audit',        makeProxy(AUDIT_URL));
+
+// 3) Now it's safe to enable middlewares for NON-proxied routes
+app.use(helmet());
+app.use(cors());
+app.use(express.json({ limit: '1mb' }));
+
+app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'api-gateway' }));
+
+app.listen(PORT, () => console.log(`API Gateway listening on :${PORT}`));
+

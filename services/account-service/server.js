@@ -13,6 +13,12 @@ app.use(helmet());
 app.use(cors());
 app.use(express.json());
 
+app.use((req, _res, next) => {
+  console.log(`[${process.env.PORT}] ${req.method} ${req.originalUrl}`);
+  next();
+});
+
+
 // MongoDB connection
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://mongo:27017/cloudbank_accounts';
 mongoose.connect(MONGO_URI);

@@ -1,0 +1,64 @@
+const express = require('express');
+const { createProxyMiddleware } = require('http-proxy-middleware');
+const cors = require('cors');
+const helmet = require('helmet');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+const AUTH_URL = process.env.AUTH_URL || 'http://auth-service:3001';
+const ACCOUNT_URL = process.env.ACCOUNT_URL || 'http://account-service:3002';
+const TRANSACTION_URL = process.env.TRANSACTION_URL || 'http://transaction-service:3003';
+const AUDIT_URL = process.env.AUDIT_URL || 'http://audit-service:3005';
+
+app.use(helmet());
+app.use(cors());
+app.use(express.json({ limit: '1mb' }));
+
+// Simple request log
+app.use((req, _res, next) => {
+  console.log(new Date().toISOString(), req.method, req.originalUrl);
+  next();
+});
+
+app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'api-gateway' }));
+
+// Helper: proxy with path rewrite and BODY RE-STREAM
+const makeProxy = (target, stripPrefixRegex) =>
+  createProxyMiddleware({
+    target,
+    changeOrigin: true,
+    proxyTimeout: 15000,
+    timeout: 15000,
+    logLevel: 'debug',
+    pathRewrite: (path) => path.replace(stripPrefixRegex, ''), // e.g. /api/auth/register -> /register
+    onProxyReq: (proxyReq, req) => {
+      // Re-stream JSON body because express.json() already consumed the stream
+      if (['POST', 'PUT', 'PATCH'].includes(req.method) && req.body && Object.keys(req.body).length) {
+        const bodyData = JSON.stringify(req.body);
+        if (!proxyReq.getHeader('content-type')) {
+          proxyReq.setHeader('content-type', 'application/json');
+        }
+        proxyReq.setHeader('content-length', Buffer.byteLength(bodyData));
+        proxyReq.write(bodyData);
+      }
+    },
+    onError: (err, _req, res) => {
+      console.error('Proxy error:', err.message);
+      res.status(502).json({ error: 'Bad gateway', detail: err.message });
+    },
+  });
+
+// If your services expose /register, /login, /accounts, /transactions at the ROOT:
+app.use('/api/auth',         makeProxy(AUTH_URL,         /^\/api\/auth/));
+app.use('/api/accounts',     makeProxy(ACCOUNT_URL));   // NO rewrite
+app.use('/api/transactions', makeProxy(TRANSACTION_URL)); // NO rewrite
+app.use('/api/audit',        makeProxy(AUDIT_URL));     // NO rewrite
+
+app.get('/', (_req, res) => res.json({
+  service: 'api-gateway',
+  routes: ['/api/auth','/api/accounts','/api/transactions','/api/audit']
+}));
+
+app.listen(PORT, () => console.log(`API Gateway listening on :${PORT}`));
+

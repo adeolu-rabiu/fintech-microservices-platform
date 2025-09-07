@@ -1,0 +1,124 @@
+// services/api-gateway/server.js
+const express = require('express');
+const { createProxyMiddleware } = require('http-proxy-middleware');
+const cors = require('cors');
+const helmet = require('helmet');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+const AUTH_URL         = process.env.AUTH_URL || 'http://auth-service:3001';
+const ACCOUNT_URL      = process.env.ACCOUNT_URL || 'http://account-service:3002';
+const TRANSACTION_URL  = process.env.TRANSACTION_URL || 'http://transaction-service:3003';
+const AUDIT_URL        = process.env.AUDIT_URL || 'http://audit-service:3005';
+
+// --- Simple request log (runs for all requests)
+app.use((req, _res, next) => {
+  console.log(new Date().toISOString(), req.method, req.originalUrl);
+  next();
+});
+
+// --- Health (served by the gateway itself)
+app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'api-gateway' }));
+
+/**
+ * Forward a JSON request to the first working path in `candidates`.
+ * Tries in order; if one returns non-404, that result is returned to the client.
+ * Uses Node 18+'s global fetch.
+ */
+async function tryForwardJSON(baseUrl, candidates, clientReq, clientRes) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+
+  try {
+    const bodyObj = clientReq.body ?? {};
+    const bodyStr = JSON.stringify(bodyObj);
+    const commonHeaders = {
+      'content-type': 'application/json',
+      'accept': clientReq.headers['accept'] || 'application/json',
+    };
+    if (clientReq.headers['authorization']) {
+      commonHeaders['authorization'] = clientReq.headers['authorization'];
+    }
+
+    for (const path of candidates) {
+      const url = baseUrl.replace(/\/+$/, '') + path; // ensure single slash join
+      try {
+        const resp = await fetch(url, {
+          method: clientReq.method,
+          headers: commonHeaders,
+          body: bodyStr,
+          signal: controller.signal,
+        });
+
+        // If upstream says "not found", try next candidate
+        if (resp.status === 404) {
+          continue;
+        }
+
+        const text = await resp.text();
+        // mirror status + content-type back to client
+        const ct = resp.headers.get('content-type') || 'application/json; charset=utf-8';
+        clientRes.status(resp.status).set('content-type', ct).send(text);
+        return;
+      } catch (err) {
+        // On network error or abort, try next candidate
+        console.error(`Auth forward to ${url} failed:`, err.message);
+        continue;
+      }
+    }
+
+    // none worked
+    clientRes.status(502).json({ error: 'Bad gateway', detail: 'No matching upstream route' });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// --- Auth endpoints with smart fallback:
+//     Tries /api/auth/<route> first, then falls back to /<route> at service root.
+const parseJson = express.json({ limit: '1mb' }); // route-scoped parser (not global)
+
+// Register
+app.post('/api/auth/register', parseJson, async (req, res) => {
+  await tryForwardJSON(AUTH_URL, ['/api/auth/register', '/register'], req, res);
+});
+
+// Login
+app.post('/api/auth/login', parseJson, async (req, res) => {
+  await tryForwardJSON(AUTH_URL, ['/api/auth/login', '/login'], req, res);
+});
+
+// --- Generic proxy makers (no rewrites; mounted BEFORE any global body parser)
+const makeProxy = (target) =>
+  createProxyMiddleware({
+    target,
+    changeOrigin: true,
+    logLevel: 'info',         // keep logs light to avoid noise/OOM
+    proxyTimeout: 15000,
+    timeout: 15000,
+    onError: (err, _req, res) => {
+      console.error('Proxy error:', err.message);
+      if (!res.headersSent) {
+        res.status(502).json({ error: 'Bad gateway', detail: err.message });
+      }
+    },
+  });
+
+// For any other auth routes (e.g., /api/auth/refresh), just pass through as-is
+app.use('/api/auth', makeProxy(AUTH_URL));
+
+// Pass-through for other services (they already expose /api/... paths)
+app.use('/api/accounts',     makeProxy(ACCOUNT_URL));
+app.use('/api/transactions', makeProxy(TRANSACTION_URL));
+app.use('/api/audit',        makeProxy(AUDIT_URL));
+
+// --- Safe to enable security/CORS AFTER proxies and custom handlers
+app.use(helmet());
+app.use(cors());
+
+// --- Last-resort 404 for gateway-owned routes
+app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
+
+app.listen(PORT, () => console.log(`API Gateway listening on :${PORT}`));
+

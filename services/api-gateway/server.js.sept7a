@@ -1,0 +1,46 @@
+const express = require('express');
+const { createProxyMiddleware } = require('http-proxy-middleware');
+const app = express();
+
+// Basic middleware
+app.use(express.json());
+
+// Logging
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
+  next();
+});
+
+// Gateway health
+app.get('/health', (req, res) => {
+  res.json({ status: 'healthy', service: 'api-gateway', timestamp: new Date().toISOString() });
+});
+
+// Working proxy configuration
+const authProxy = createProxyMiddleware('/api/auth', {
+  target: 'http://auth-service:3001',
+  changeOrigin: true,
+  pathRewrite: { '^/api/auth': '/api' },
+  logLevel: 'info'
+});
+
+const accountProxy = createProxyMiddleware('/api/accounts', {
+  target: 'http://account-service:3002',
+  changeOrigin: true,
+  logLevel: 'info'
+});
+
+const transactionProxy = createProxyMiddleware('/api/transactions', {
+  target: 'http://transaction-service:3003',
+  changeOrigin: true,
+  logLevel: 'info'
+});
+
+// Apply proxies
+app.use('/api/auth', authProxy);
+app.use('/api/accounts', accountProxy);
+app.use('/api/transactions', transactionProxy);
+
+app.listen(3000, () => {
+  console.log('Simple proxy gateway on port 3000');
+});

@@ -14,6 +14,12 @@ app.use(helmet());
 app.use(cors());
 app.use(express.json());
 
+app.use((req, _res, next) => {
+  console.log(`[${process.env.PORT}] ${req.method} ${req.originalUrl}`);
+  next();
+});
+
+
 // Simple rate limiting middleware
 const rateLimitMap = new Map();
 const rateLimit = (req, res, next) => {

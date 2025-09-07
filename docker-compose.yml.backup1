@@ -1,0 +1,147 @@
+
+services:
+  mongo:
+    image: mongo:6
+    container_name: cloudbank-mongo
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: cloudbank123
+      MONGO_INITDB_DATABASE: cloudbank
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - cloudbank-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: cloudbank-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --requirepass cloudbank123
+    volumes:
+      - redis_data:/data
+    networks:
+      - cloudbank-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  auth-service:
+    build: 
+      context: ./services/auth-service
+      dockerfile: Dockerfile
+    container_name: cloudbank-auth
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=development
+      - PORT=3001
+      - MONGO_URI=mongodb://admin:cloudbank123@mongo:27017/cloudbank_auth?authSource=admin
+      - JWT_SECRET=cloudbank_super_secret_jwt_key_2024
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - cloudbank-network
+    restart: unless-stopped
+
+  account-service:
+    build: 
+      context: ./services/account-service
+      dockerfile: Dockerfile
+    container_name: cloudbank-account
+    ports:
+      - "3002:3002"
+    environment:
+      - NODE_ENV=development
+      - PORT=3002
+      - MONGO_URI=mongodb://admin:cloudbank123@mongo:27017/cloudbank_accounts?authSource=admin
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - cloudbank-network
+    restart: unless-stopped
+
+  transaction-service:
+    build: 
+      context: ./services/transaction-service
+      dockerfile: Dockerfile
+    container_name: cloudbank-transaction
+    ports:
+      - "3003:3003"
+    environment:
+      - NODE_ENV=development
+      - PORT=3003
+      - MONGO_URI=mongodb://admin:cloudbank123@mongo:27017/cloudbank_transactions?authSource=admin
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - cloudbank-network
+    restart: unless-stopped
+
+  audit-service:
+    build: 
+      context: ./services/audit-service
+      dockerfile: Dockerfile
+    container_name: cloudbank-audit
+    ports:
+      - "3005:3005"
+    environment:
+      - NODE_ENV=development
+      - PORT=3005
+      - MONGO_URI=mongodb://admin:cloudbank123@mongo:27017/cloudbank_audit?authSource=admin
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - cloudbank-network
+    restart: unless-stopped
+
+  api-gateway:
+    build: 
+      context: ./services/api-gateway
+      dockerfile: Dockerfile
+    container_name: cloudbank-gateway
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+    depends_on:
+      - auth-service
+      - account-service
+      - transaction-service
+      - audit-service
+    networks:
+      - cloudbank-network
+    restart: unless-stopped
+
+volumes:
+  mongo_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  cloudbank-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

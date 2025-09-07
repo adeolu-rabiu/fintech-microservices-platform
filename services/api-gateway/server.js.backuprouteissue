@@ -1,0 +1,103 @@
+const express = require('express');
+const { createProxyMiddleware } = require('http-proxy-middleware');
+const cors = require('cors');
+const helmet = require('helmet');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Service URLs
+const AUTH_URL = process.env.AUTH_URL || 'http://auth-service:3001';
+const ACCOUNT_URL = process.env.ACCOUNT_URL || 'http://account-service:3002';
+const TRANSACTION_URL = process.env.TRANSACTION_URL || 'http://transaction-service:3003';
+const AUDIT_URL = process.env.AUDIT_URL || 'http://audit-service:3005';
+
+// Apply security middleware early
+app.use(helmet());
+app.use(cors());
+app.use(express.json());
+
+// Request logging
+app.use((req, res, next) => {
+  console.log(`[GATEWAY] ${new Date().toISOString()} ${req.method} ${req.originalUrl}`);
+  next();
+});
+
+// Gateway health check
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'healthy', 
+    service: 'api-gateway',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Create proxy middleware with better error handling
+const createProxy = (target, pathRewrite = undefined) => {
+  return createProxyMiddleware({
+    target,
+    changeOrigin: true,
+    logLevel: 'warn',
+    timeout: 30000,
+    proxyTimeout: 30000,
+    pathRewrite,
+    onError: (err, req, res) => {
+      console.error(`[GATEWAY] Proxy error for ${req.url}:`, err.message);
+      if (!res.headersSent) {
+        res.status(502).json({ 
+          error: 'Service unavailable', 
+          service: target,
+          path: req.url 
+        });
+      }
+    },
+    onProxyReq: (proxyReq, req, res) => {
+      console.log(`[GATEWAY] Proxying ${req.method} ${req.url} -> ${target}${proxyReq.path}`);
+    }
+  });
+};
+
+// Service health checks - direct proxy to /health endpoints
+app.use('/api/auth/health', createProxy(AUTH_URL, { '^/api/auth/health': '/health' }));
+app.use('/api/accounts/health', createProxy(ACCOUNT_URL, { '^/api/accounts/health': '/health' }));
+app.use('/api/transactions/health', createProxy(TRANSACTION_URL, { '^/api/transactions/health': '/health' }));
+app.use('/api/audit/health', createProxy(AUDIT_URL, { '^/api/audit/health': '/health' }));
+
+// Auth service routes
+app.use('/api/auth', createProxy(AUTH_URL, { '^/api/auth': '/api' }));
+
+// Account service routes  
+app.use('/api/accounts', createProxy(ACCOUNT_URL));
+
+// Transaction service routes
+app.use('/api/transactions', createProxy(TRANSACTION_URL));
+
+// Audit service routes
+app.use('/api/audit', createProxy(AUDIT_URL));
+
+// Catch-all 404 handler - FIX: Use a proper route pattern instead of *
+app.use((req, res) => {
+  res.status(404).json({ 
+    error: 'Route not found',
+    path: req.originalUrl,
+    method: req.method
+  });
+});
+
+// Error handler
+app.use((err, req, res, next) => {
+  console.error('[GATEWAY] Unhandled error:', err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`API Gateway running on port ${PORT}`);
+  console.log('Available routes:');
+  console.log('  - GET  /health');
+  console.log('  - POST /api/auth/register');
+  console.log('  - POST /api/auth/login');
+  console.log('  - GET  /api/auth/health');
+  console.log('  - GET  /api/accounts/health');
+  console.log('  - POST /api/accounts');
+  console.log('  - GET  /api/accounts');
+});

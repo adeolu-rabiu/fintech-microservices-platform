@@ -1,0 +1,155 @@
+services:
+  # Infrastructure
+  mongo:
+    image: mongo:7
+    container_name: cloudbank-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - cloudbank-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: cloudbank-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - cloudbank-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Services
+  auth-service:
+    build: ./auth-service
+    container_name: cloudbank-auth
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - MONGO_URI=mongodb://mongo:27017/cloudbank_auth
+      - JWT_SECRET=cloudbank_secret_key_change_in_production
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - cloudbank-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  account-service:
+    build: ./account-service
+    container_name: cloudbank-accounts
+    ports:
+      - "3002:3002"
+    environment:
+      - PORT=3002
+      - MONGO_URI=mongodb://mongo:27017/cloudbank_accounts
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - cloudbank-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  transaction-service:
+    build: ./transaction-service
+    container_name: cloudbank-transactions
+    ports:
+      - "3003:3003"
+    environment:
+      - PORT=3003
+      - MONGO_URI=mongodb://mongo:27017/banktransactions
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      account-service:
+        condition: service_healthy
+      audit-service:
+        condition: service_healthy
+    networks:
+      - cloudbank-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  audit-service:
+    build: ./audit-service
+    container_name: cloudbank-audit
+    ports:
+      - "3005:3005"
+    environment:
+      - PORT=3005
+      - MONGO_URI=mongodb://mongo:27017/bankaudit
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - cloudbank-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3005/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  api-gateway:
+    build: ./api-gateway
+    container_name: cloudbank-gateway
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - AUTH_URL=http://auth-service:3001
+      - ACCOUNT_URL=http://account-service:3002
+      - TRANSACTION_URL=http://transaction-service:3003
+      - AUDIT_URL=http://audit-service:3005
+    depends_on:
+      auth-service:
+        condition: service_healthy
+      account-service:
+        condition: service_healthy
+      transaction-service:
+        condition: service_healthy
+      audit-service:
+        condition: service_healthy
+    networks:
+      - cloudbank-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+networks:
+  cloudbank-network:
+    driver: bridge
+
+volumes:
+  mongo_data:
